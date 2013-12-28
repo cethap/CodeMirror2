@@ -1,10 +1,10 @@
 /**
  * Author: Koh Zi Han, based on implementation by Koh Zi Chun
  */
-CodeMirror.defineMode("scheme", function (config, mode) {
+CodeMirror.defineMode("scheme", function () {
     var BUILTIN = "builtin", COMMENT = "comment", STRING = "string",
-        ATOM = "atom", NUMBER = "number", BRACKET = "bracket", KEYWORD="keyword";
-    var INDENT_WORD_SKIP = 2, KEYWORDS_SKIP = 1;
+        ATOM = "atom", NUMBER = "number", BRACKET = "bracket";
+    var INDENT_WORD_SKIP = 2;
 
     function makeKeywords(str) {
         var obj = {}, words = str.split(" ");
@@ -27,6 +27,30 @@ CodeMirror.defineMode("scheme", function (config, mode) {
 
     function popStack(state) {
         state.indentStack = state.indentStack.prev;
+    }
+
+    var binaryMatcher = new RegExp(/^(?:[-+]i|[-+][01]+#*(?:\/[01]+#*)?i|[-+]?[01]+#*(?:\/[01]+#*)?@[-+]?[01]+#*(?:\/[01]+#*)?|[-+]?[01]+#*(?:\/[01]+#*)?[-+](?:[01]+#*(?:\/[01]+#*)?)?i|[-+]?[01]+#*(?:\/[01]+#*)?)(?=[()\s;"]|$)/i);
+    var octalMatcher = new RegExp(/^(?:[-+]i|[-+][0-7]+#*(?:\/[0-7]+#*)?i|[-+]?[0-7]+#*(?:\/[0-7]+#*)?@[-+]?[0-7]+#*(?:\/[0-7]+#*)?|[-+]?[0-7]+#*(?:\/[0-7]+#*)?[-+](?:[0-7]+#*(?:\/[0-7]+#*)?)?i|[-+]?[0-7]+#*(?:\/[0-7]+#*)?)(?=[()\s;"]|$)/i);
+    var hexMatcher = new RegExp(/^(?:[-+]i|[-+][\da-f]+#*(?:\/[\da-f]+#*)?i|[-+]?[\da-f]+#*(?:\/[\da-f]+#*)?@[-+]?[\da-f]+#*(?:\/[\da-f]+#*)?|[-+]?[\da-f]+#*(?:\/[\da-f]+#*)?[-+](?:[\da-f]+#*(?:\/[\da-f]+#*)?)?i|[-+]?[\da-f]+#*(?:\/[\da-f]+#*)?)(?=[()\s;"]|$)/i);
+    var decimalMatcher = new RegExp(/^(?:[-+]i|[-+](?:(?:(?:\d+#+\.?#*|\d+\.\d*#*|\.\d+#*|\d+)(?:[esfdl][-+]?\d+)?)|\d+#*\/\d+#*)i|[-+]?(?:(?:(?:\d+#+\.?#*|\d+\.\d*#*|\.\d+#*|\d+)(?:[esfdl][-+]?\d+)?)|\d+#*\/\d+#*)@[-+]?(?:(?:(?:\d+#+\.?#*|\d+\.\d*#*|\.\d+#*|\d+)(?:[esfdl][-+]?\d+)?)|\d+#*\/\d+#*)|[-+]?(?:(?:(?:\d+#+\.?#*|\d+\.\d*#*|\.\d+#*|\d+)(?:[esfdl][-+]?\d+)?)|\d+#*\/\d+#*)[-+](?:(?:(?:\d+#+\.?#*|\d+\.\d*#*|\.\d+#*|\d+)(?:[esfdl][-+]?\d+)?)|\d+#*\/\d+#*)?i|(?:(?:(?:\d+#+\.?#*|\d+\.\d*#*|\.\d+#*|\d+)(?:[esfdl][-+]?\d+)?)|\d+#*\/\d+#*))(?=[()\s;"]|$)/i);
+
+    function isBinaryNumber (stream) {
+        return stream.match(binaryMatcher);
+    }
+
+    function isOctalNumber (stream) {
+        return stream.match(octalMatcher);
+    }
+
+    function isDecimalNumber (stream, backup) {
+        if (backup === true) {
+            stream.backUp(1);
+        }
+        return stream.match(decimalMatcher);
+    }
+
+    function isHexNumber (stream) {
+        return stream.match(hexMatcher);
     }
 
     return {
@@ -97,24 +121,52 @@ CodeMirror.defineMode("scheme", function (config, mode) {
                     } else if (ch == "'") {
                         returnType = ATOM;
                     } else if (ch == '#') {
-                        if (stream.eat("|")) {					// Multi-line comment
+                        if (stream.eat("|")) {                    // Multi-line comment
                             state.mode = "comment"; // toggle to comment mode
                             returnType = COMMENT;
-                        } else if (stream.eat(/[tf]/)) {			// #t/#f (atom)
+                        } else if (stream.eat(/[tf]/i)) {            // #t/#f (atom)
                             returnType = ATOM;
-                        } else if (stream.eat(';')) {				// S-Expr comment
+                        } else if (stream.eat(';')) {                // S-Expr comment
                             state.mode = "s-expr-comment";
                             returnType = COMMENT;
+                        } else {
+                            var numTest = null, hasExactness = false, hasRadix = true;
+                            if (stream.eat(/[ei]/i)) {
+                                hasExactness = true;
+                            } else {
+                                stream.backUp(1);       // must be radix specifier
+                            }
+                            if (stream.match(/^#b/i)) {
+                                numTest = isBinaryNumber;
+                            } else if (stream.match(/^#o/i)) {
+                                numTest = isOctalNumber;
+                            } else if (stream.match(/^#x/i)) {
+                                numTest = isHexNumber;
+                            } else if (stream.match(/^#d/i)) {
+                                numTest = isDecimalNumber;
+                            } else if (stream.match(/^[-+0-9.]/, false)) {
+                                hasRadix = false;
+                                numTest = isDecimalNumber;
+                            // re-consume the intial # if all matches failed
+                            } else if (!hasExactness) {
+                                stream.eat('#');
+                            }
+                            if (numTest != null) {
+                                if (hasRadix && !hasExactness) {
+                                    // consume optional exactness after radix
+                                    stream.match(/^#[ei]/i);
+                                }
+                                if (numTest(stream))
+                                    returnType = NUMBER;
+                            }
                         }
-
+                    } else if (/^[-+0-9.]/.test(ch) && isDecimalNumber(stream, true)) { // match non-prefixed number, must be decimal
+                        returnType = NUMBER;
                     } else if (ch == ";") { // comment
                         stream.skipToEnd(); // rest of the line is a comment
                         returnType = COMMENT;
-                    } else if (/\d/.test(ch) && stream.match(/$|\d+(?:\/\d+|(?:\.\d+)?(?:[eE][+\-]?\d+)?)\b/) ||
-                               ch == "-" && stream.match(/\d+(?:\/\d+|(?:\.\d+)?(?:[eE][+\-]?\d+)?)\b/)) {
-                        returnType = NUMBER;
                     } else if (ch == "(" || ch == "[") {
-                        var keyWord = ''; var indentTemp = stream.column();
+                      var keyWord = ''; var indentTemp = stream.column(), letter;
                         /**
                         Either
                         (indent-word ..
@@ -168,10 +220,12 @@ CodeMirror.defineMode("scheme", function (config, mode) {
             return (typeof state.sExprComment == "number") ? COMMENT : returnType;
         },
 
-        indent: function (state, textAfter) {
+        indent: function (state) {
             if (state.indentStack == null) return state.indentation;
             return state.indentStack.indent;
-        }
+        },
+
+        lineComment: ";;"
     };
 });
 
